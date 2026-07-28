@@ -1,0 +1,64 @@
+# Course-local overrides for the CS435 Sprint-0 setup.
+#
+# Fixes three things that stop upstream's dev compose from working on a fresh
+# machine, plus remaps ports so Chatwoot can coexist with the other projects.
+#
+# Docker Compose picks this file up automatically alongside docker-compose.yaml.
+services:
+  rails:
+    # Publishes Vite's port too, because the vite service shares this
+    # container's network namespace (see below).
+    ports: !override
+      - "3004:3000"
+      - "3036:3036"
+    # FIX 1 — the Vite dev server.
+    # vite_ruby needs a dev server it can probe, and the URLs it prints must be
+    # reachable by the BROWSER. Those two conflicted: the browser cannot resolve
+    # the "vite" service name, but from inside this container localhost:3036 was
+    # Rails itself. When the probe failed, vite_ruby fell back to `autoBuild`,
+    # and that build needs ~3 GB of heap and gets OOM-killed in a 4 GB VM.
+    # Sharing one network namespace makes localhost:3036 correct for Rails, and
+    # the published port makes the same URL correct for the browser.
+    environment:
+      VITE_RUBY_HOST: localhost
+      VITE_RUBY_PORT: "3036"
+      VITE_RUBY_AUTO_BUILD: "false"
+    # Upstream has rails depend on vite; with the namespace sharing above that
+    # would be a cycle, since vite now depends on rails.
+    depends_on: !override
+      - postgres
+      - redis
+      - mailhog
+
+  vite:
+    # Share the Rails container's network namespace so both agree on localhost.
+    network_mode: "service:rails"
+    ports: !reset []
+    depends_on: !override
+      - rails
+    environment:
+      VITE_RUBY_HOST: 0.0.0.0
+
+  postgres:
+    ports: !override
+      - "5435:5432"
+    # FIX 2 — upstream sets POSTGRES_PASSWORD to an empty string, which the
+    # postgres image refuses on a fresh volume:
+    #   "Database is uninitialized and superuser password is not specified."
+    # The app is configured for a passwordless local connection, so allow it
+    # rather than inventing a password the app won't send. Safe here: the port
+    # is only published to this machine.
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+
+  # FIX 3 — port remaps, so Chatwoot can run alongside the other course
+  # projects. 3000 is cal.diy, 5432/6379 are Outline's, 8025/1025 are
+  # Discourse's. Only the host side moves; containers still use standard ports.
+  redis:
+    ports: !override
+      - "6381:6379"
+
+  mailhog:
+    ports: !override
+      - "1028:1025"
+      - "8028:8025"
